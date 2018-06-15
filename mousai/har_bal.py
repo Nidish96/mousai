@@ -113,7 +113,7 @@ def hb_time(sdfunc, x0=None, omega=1, method='newton_krylov', num_harmonics=1,
     Examples
     --------
     >>> import mousai as ms
-    >>> t, x, e, amps, phases = ms.hb_time(ms.duff_osc,
+    >>> t, x, e, amps, phases, _ = ms.hb_time(ms.duff_osc,
     ...                                    np.array([[0,1,-1]]),
     ...                                    omega = 0.7)
 
@@ -413,7 +413,7 @@ def time_errors(sdfunc, x0=None, omega=1, num_harmonics=1, num_variables=None,
     Examples
     --------
     >>> import mousai as ms
-    >>> t, x, e, amps, phases = ms.hb_time(ms.duff_osc,
+    >>> t, x, e, amps, phases, _ = ms.hb_time(ms.duff_osc,
     ...                                    np.array([[0,1,-1]]),
     ...                                    omega = 0.7)
 
