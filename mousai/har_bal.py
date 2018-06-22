@@ -108,7 +108,7 @@ def hb_time(sdfunc, x0=None, omega=1, method='newton_krylov', num_harmonics=1,
     amps : float array
         amplitudes of displacement (primary harmonic) in column vector format.
     phases : float array
-        amplitudes of displacement (primary harmonic) in column vector format.
+        phases of displacement (primary harmonic) in column vector format.
 
     Examples
     --------
@@ -179,6 +179,7 @@ def hb_time(sdfunc, x0=None, omega=1, method='newton_krylov', num_harmonics=1,
 
         x0 = fftp.ifft(x_freq) * (1 + num_harmonics * 2) / x0.shape[1]
         x0 = np.real(x0)
+
     if isinstance(sdfunc, str):
         sdfunc = globals()[sdfunc]
         print("`sdfunc` is expected to be a function name, not a string")
@@ -188,7 +189,7 @@ def hb_time(sdfunc, x0=None, omega=1, method='newton_krylov', num_harmonics=1,
     params['omega'] = omega
     params['n_har'] = num_harmonics
 
-    def hb_err(x):  #  , params=None):
+    def hb_err(x):
         r"""Array (vector) of hamonic balance second order algebraic errors.
 
         Given a set of second order equations
@@ -307,6 +308,61 @@ def hb_time(sdfunc, x0=None, omega=1, method='newton_krylov', num_harmonics=1,
     else:
         print('x was real')
     return time, x, e, amps, phases, (hb_err, solver_method)
+
+
+def build_x0(x0=None, num_variables=None, num_harmonics=1):
+    r"""Return x0 time histories from guess.
+
+    Harmonic balance requires a starting guess for all states (state-space)
+    or displacements (second order form). These guesses must also have a time
+    history. At a minimum (as required by the time-based solver), a single
+    harmonic response requires 3 points, the Fourier series of which yields
+    the constant term and the two orthogonal harmonic fundamental components
+    (for example, sine and cosine- although the solve actually uses complex
+    exponentials). If the user desires two harmonics, 5 time-history points are
+    required.
+
+    Parameters
+    ----------
+    x0 : array_like, somewhat optional- requires num_variables if not provided.
+        n x 1 array where n is the number of equations.
+    num_harmonics : int, optional
+        Number of harmonics to presume. The omega = 0 constant term is always
+        presumed to exist. Minimum (and default) is 1. If num_harmonics*2+1
+        exceeds the number of columns of `x0` then `x0` will be expanded, using
+        Fourier analaysis, to include additional harmonics with the starting
+        presumption of zero values.
+    num_variables : int, somewhat optional- required x0 if not provided.
+        Number of states for a state space model, or number of generalized
+        dispacements for a second order form.
+        If `x0` is defined, num_variables is inferred. An error will result if
+        both `x0` and num_variables are left out of the function call.
+        `num_variables` must be defined if `x0` is not.
+
+    Returns
+    -------
+    x0 : array_like
+         Displacement or state vector histories.
+    """
+    if x0 is None:
+        if num_variables is not None:
+            x0 = np.zeros((num_variables, 1 + num_harmonics * 2))
+        else:
+            print('Error: Must either define number of variables or initial\
+                  guess for x.')
+            return
+    elif num_harmonics is None:
+        num_harmonics = int((x0.shape[1] - 1) / 2)
+    elif 1 + 2 * num_harmonics > x0.shape[1]:
+        x_freq = fftp.fft(x0)
+        x_zeros = np.zeros((x0.shape[0], 1 + num_harmonics * 2 - x0.shape[1]))
+        x_freq = np.insert(x_freq, [x0.shape[1] - x0.shape[1] // 2], x_zeros,
+                           axis=1)
+
+        x0 = fftp.ifft(x_freq) * (1 + num_harmonics * 2) / x0.shape[1]
+        x0 = np.real(x0)
+
+    return x0
 
 
 def time_errors(sdfunc, x0=None, omega=1, num_harmonics=1, num_variables=None,
@@ -479,6 +535,7 @@ def time_errors(sdfunc, x0=None, omega=1, num_harmonics=1, num_variables=None,
 
         x0 = fftp.ifft(x_freq) * (1 + num_harmonics * 2) / x0.shape[1]
         x0 = np.real(x0)
+
     if isinstance(sdfunc, str):
         sdfunc = globals()[sdfunc]
         print("`sdfunc` is expected to be a function name, not a string")
@@ -776,6 +833,7 @@ def hb_freq(sdfunc, x0=None, omega=1, method='newton_krylov', num_harmonics=1,
 
         x0 = fftp.ifft(x_freq) * (1 + num_harmonics * 2) / x0.shape[1]
         x0 = np.real(x0)
+
     if isinstance(sdfunc, str):
         sdfunc = globals()[sdfunc]
         print("`sdfunc` is expected to be a function name, not a string")
