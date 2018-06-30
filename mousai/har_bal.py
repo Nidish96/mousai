@@ -518,6 +518,7 @@ def time_errors(sdfunc, x0=None, omega=1, num_harmonics=1, num_variables=None,
                                 , 'newton_krylov')
 
     # Initial conditions exist?
+    '''
     if x0 is None:
         if num_variables is not None:
             x0 = np.zeros((num_variables, 1 + num_harmonics * 2))
@@ -535,6 +536,9 @@ def time_errors(sdfunc, x0=None, omega=1, num_harmonics=1, num_variables=None,
 
         x0 = fftp.ifft(x_freq) * (1 + num_harmonics * 2) / x0.shape[1]
         x0 = np.real(x0)
+    '''
+
+    x0 = build_x0(x0=None, num_variables=None, num_harmonics=1)
 
     if isinstance(sdfunc, str):
         sdfunc = globals()[sdfunc]
