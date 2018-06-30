@@ -162,7 +162,7 @@ def hb_time(sdfunc, x0=None, omega=1, method='newton_krylov', num_harmonics=1,
                                 , 'newton_krylov')
 
     # Initial conditions exist?
-    if x0 is None:
+    '''if x0 is None:
         if num_variables is not None:
             x0 = np.zeros((num_variables, 1 + num_harmonics * 2))
         else:
@@ -179,6 +179,9 @@ def hb_time(sdfunc, x0=None, omega=1, method='newton_krylov', num_harmonics=1,
 
         x0 = fftp.ifft(x_freq) * (1 + num_harmonics * 2) / x0.shape[1]
         x0 = np.real(x0)
+    '''
+
+
 
     if isinstance(sdfunc, str):
         sdfunc = globals()[sdfunc]
@@ -538,7 +541,7 @@ def time_errors(sdfunc, x0=None, omega=1, num_harmonics=1, num_variables=None,
         x0 = np.real(x0)
     '''
 
-    x0 = build_x0(x0=None, num_variables=None, num_harmonics=1)
+    x0 = build_x0(x0=x0, num_variables=num_variables, num_harmonics=num_harmonics)
 
     if isinstance(sdfunc, str):
         sdfunc = globals()[sdfunc]
@@ -820,6 +823,7 @@ def hb_freq(sdfunc, x0=None, omega=1, method='newton_krylov', num_harmonics=1,
 
     """
     # Initial conditions exist?
+    '''
     if x0 is None:
         if num_variables is not None:
             x0 = np.zeros((num_variables, 1 + num_harmonics * 2))
@@ -837,8 +841,9 @@ def hb_freq(sdfunc, x0=None, omega=1, method='newton_krylov', num_harmonics=1,
 
         x0 = fftp.ifft(x_freq) * (1 + num_harmonics * 2) / x0.shape[1]
         x0 = np.real(x0)
+    '''
 
-    #x0 = build_x0(x0=None, num_variables=None, num_harmonics=1)
+    x0 = build_x0(x0=x0, num_variables=num_variables, num_harmonics=num_harmonics)
 
     if isinstance(sdfunc, str):
         sdfunc = globals()[sdfunc]
