@@ -834,6 +834,8 @@ def hb_freq(sdfunc, x0=None, omega=1, method='newton_krylov', num_harmonics=1,
         x0 = fftp.ifft(x_freq) * (1 + num_harmonics * 2) / x0.shape[1]
         x0 = np.real(x0)
 
+    #x0 = build_x0(x0=None, num_variables=None, num_harmonics=1)
+
     if isinstance(sdfunc, str):
         sdfunc = globals()[sdfunc]
         print("`sdfunc` is expected to be a function name, not a string")
