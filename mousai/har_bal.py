@@ -181,12 +181,12 @@ def hb_time(sdfunc, x0=None, omega=1, method='newton_krylov', num_harmonics=1,
         x0 = np.real(x0)
     '''
 
-
+    x0 = build_x0(x0=x0, num_variables=num_variables, num_harmonics=num_harmonics)
 
     if isinstance(sdfunc, str):
         sdfunc = globals()[sdfunc]
         print("`sdfunc` is expected to be a function name, not a string")
-    params['function'] = sdfunc  # function that returns SO derivative
+    params['function'] = sdfunc  # function that returns derivative
     time = np.linspace(0, 2 * np.pi / omega, num=x0.shape[1], endpoint=False)
     params['time'] = time
     params['omega'] = omega
@@ -275,8 +275,8 @@ def hb_time(sdfunc, x0=None, omega=1, method='newton_krylov', num_harmonics=1,
                 params['cur_time'] = time[i]
                 # Note that everything in params can be accessed within
                 # `function`.
-                vel_from_deriv[:, i] =\
-                    params['function'](x[:, i], params)[:, 0]
+                vel_from_deriv[:, i] = params['function'](x[:, i],
+                                                          params)[:, 0]
 
             e = vel_from_deriv - vel
         else:
