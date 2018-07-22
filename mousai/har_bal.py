@@ -992,16 +992,16 @@ def hb_freq_cont(Fnlfunc, X0=None, Ws=0.01, We=1.00, ds=0.01, maxNp=1000, deriv=
                 raise ValueError('Finite Difference Jacobian yet to be added')
         else:
             raise ValueError('Unknown fnform')
-        # ipdb.set_trace()
+        
         Fl = np.zeros((nd*(2*Nh+1),1))
         fh = params['fh']
-        Fl[(nd+(fh-1)*2*nd):(2*nd+(fh-1)*2*nd),0] = params['Fc']
-        Fl[(2*nd+(fh-1)*2*nd):(3*nd+(fh-1)*2*nd),0] = params['Fs']
+        Fl[(nd+(fh-1)*2*nd):(2*nd+(fh-1)*2*nd),:] = params['Fc']
+        Fl[(2*nd+(fh-1)*2*nd):(3*nd+(fh-1)*2*nd),:] = params['Fs']
         R = np.dot(E,X[:-1,:]) + Fnl - Fl
         dRdX = E+Jnl
         dRdW = np.dot(dEdw,X[:-1,:]) + dFnldW
         return R,dRdX,dRdW
-    
+    # ipdb.set_trace()
     # Correct Initial Solution
     print('Initial Correction')
     try:
