@@ -812,7 +812,8 @@ def fft_to_rfft(X_real):
 def hb_freq_cont(Fnlfunc, X0=None, Ws=0.01, We=1.00, ds=0.01, maxNp=1000, deriv=False, fnform='Time',
                  method='newton_krylov', num_harmonics=1, mask_constant=True,
                  eqform='second_order', params={}, num_time_points=128, solep=1e-6,
-                 ITMAX=100, dsmax=None, dsmin=None, scf=None, **kwargs):
+                 ITMAX=100, dsmax=None, dsmin=None, scf=None, Nop=None, angop=None,
+                 zt=None, **kwargs):
     r"""Harmonic balance solver with continuation for first and second order ODEs.
     
     Obtains and continues the solution of a first-order and second-order differential 
@@ -959,7 +960,7 @@ def hb_freq_cont(Fnlfunc, X0=None, Ws=0.01, We=1.00, ds=0.01, maxNp=1000, deriv=
             dEdw[sst:sen,cst:cen] = -dEdw[cst:cen,sst:sen]
 
         # Nonlinear forcing & Jacobian calculation
-        if fnform=='Time':
+        if fnform=='Time': ## INCOMPLETE: Got to add provision for velocity dependent nonlinearities
             t = np.linspace(0,2*np.pi,Nt,endpoint=0)
             t = np.reshape(t,(Nt,1))
             Xd = np.reshape(X[0:-1,0],(2*Nh+1,nd))
@@ -967,7 +968,16 @@ def hb_freq_cont(Fnlfunc, X0=None, Ws=0.01, We=1.00, ds=0.01, maxNp=1000, deriv=
             if deriv==True:
                 Fnlt, dFnldxt, dFnldxdt, dFnldWt = Fnlfunc(Xt, params)
             else:
-                raise ValueError('Finite Difference Jacobian yet to be added')
+                Fnlt = Fnlfunc(Xt, params)
+                _h_ = 1e-3
+                dFnldx = np.zeros((Nt,nd*nd))
+                for i in range(0,nd):
+                    Xp = Xt.copy()
+                    Xp[:,i] = Xt[:,i] + _h_
+                    dFnldx[:,i::nd] = (Fnlfunc(Xp, params)-Fnlt)/_h_
+                dFnldxdt = np.zeros_like(dFnldx)
+                dFnldWt = np.zeros_like(Fnlt)
+                    
             Fnl = np.reshape(time2freq(Fnlt, Nh),(nd*(2*Nh+1),1))
             dFnldW = np.reshape(time2freq(dFnldWt, Nh),(nd*(2*Nh+1),1))
             
@@ -989,7 +999,16 @@ def hb_freq_cont(Fnlfunc, X0=None, Ws=0.01, We=1.00, ds=0.01, maxNp=1000, deriv=
             if deriv==True:
                 Fnl, Jnl, dFnldW = Fnlfn(X, params)
             else:
-                raise ValueError('Finite Difference Jacobian yet to be added')
+                Fnl = Fnlfn(X, params)
+                Jnl = np.zeros((Fnl.size,Fnl.size))
+                Xp = X.copy()
+                _h_ = 1e-3
+                for k in range(0,Fnl.size):
+                    Xp[k,:] = Xp[k,:]+_h_
+                    Jnl[:,k] = (Fnlfn(Xp, params)-Fnl)/_h_
+                    Xp[k,:] = Xp[k,:]-_h_
+                Xp[-1,:] = Xp[-1,:]+_h_
+                dFnldW = (Fnlfn(Xp,params)-Fnl)/_h_
         else:
             raise ValueError('Unknown fnform')
         
@@ -1016,6 +1035,7 @@ def hb_freq_cont(Fnlfunc, X0=None, Ws=0.01, We=1.00, ds=0.01, maxNp=1000, deriv=
             R,dRdX,dRdW = hb_res(Xi, params, nd, Nh, Fnlfunc, fnform, deriv)
             res = np.asscalar(la.norm(R))
             iter=iter+1
+            print('Iter=',iter,'; Res=',res)
             if iter>ITMAX:
                 print('Initial convergence failed even after ',ITMAX,' Iterations')
                 return -2
@@ -1027,48 +1047,52 @@ def hb_freq_cont(Fnlfunc, X0=None, Ws=0.01, We=1.00, ds=0.01, maxNp=1000, deriv=
     X = np.zeros((nd*(2*Nh+1)+1,maxNp))
     X[:,0:1] = Xi
     dir = np.sign(We-Ws)
+
+    if zt is None:
+        zt = 1.0/(len(Xi)-1)
     # Tangent
-    z = -la.solve(dRdX,dRdW)
+    z = -np.sqrt(zt)*la.solve(dRdX,dRdW)
     alpha = dir/np.sqrt(1.0 + np.dot(z.T,z))
+    alphap = alpha
     w = Ws
     npt = 0
-    ds0 = ds
-    if scf is None:
-        scf = np.sqrt(2)
     if dsmax is None:
         dsmax = 5*ds
     if dsmin is None:
         dsmin = ds/5
-    while dir*w<dir*We:
-        npt = npt+1
-        if npt==maxNp:
-            print('Max points exceeded')
-            break        
+    Dscale = np.ones_like(Xi[:,0])
+    while dir*w<dir*We:   
         # Predictor
         dWds = alpha
         dXds = alpha*z
         DXds = np.block([[dXds],[dWds]])
         X0 = Xi
         Xp = X0 + DXds*ds
-        # ipdb.set_trace()
+
+        zp = z
+        alphap = alpha
         # Corrector
         Xi = X0
+        Dscale[:] = np.max(np.block([[np.abs(Xi),np.reshape(Dscale,(Dscale.size,1))]]),axis=1)
         R,dRdX,dRdW = hb_res(Xi, params, nd, Nh, Fnlfunc, fnform, deriv)
         RR = np.block([[R],[np.dot(DXds.T,Xi-X0)-ds]])
         JAC = np.block([[dRdX,dRdW],[DXds.T]])
         res = np.asscalar(la.norm(RR))
         iter=1
-        while res>solep:
-            Xi = Xi - la.solve(JAC,RR)
+        while True:
+            # ipdb.set_trace()
+            Xi = Xi - np.dot(np.diag(Dscale),la.solve(np.dot(JAC,np.diag(Dscale)),RR))
             R,dRdX,dRdW = hb_res(Xi, params, nd, Nh, Fnlfunc, fnform, deriv)
             RR = np.block([[R],[np.dot(DXds.T,Xi-X0)-ds]])
             JAC = np.block([[dRdX,dRdW],[DXds.T]])
             res = la.norm(RR)
             iter=iter+1
             if iter>ITMAX:
-                if ds>dsmin*scf:
-                    ds=ds/scf
-                    print('No convergence: Reducing step length')
+                scf = Nop/iter
+                if ds>dsmin:
+                    ds=ds*scf
+                    Xi = X0
+                    print('No convergence: Reducing step length to ',ds)
                 else:
                     print('No convergence: quitting with zeros')
                     w = Xi[-1,:]
@@ -1076,20 +1100,39 @@ def hb_freq_cont(Fnlfunc, X0=None, Ws=0.01, We=1.00, ds=0.01, maxNp=1000, deriv=
                     Xi[-1,:] = w
                     break
                 iter=1
-        print('N=',npt,'; W=', Xi[-1,0],'; ds=',ds,'; It=',iter,'; R=',res)
+
+            if res<solep:
+                z = -np.sqrt(zt)*la.solve(dRdX,dRdW)
+                alpha = 1.0/np.sqrt(1.0+np.dot(z.T,z))
+                angbw = np.arccos(alpha*alphap*(1.0+np.dot(zp.T,z)))
+                break
+        # Tangent
+        alpha = alpha*np.sign(np.cos(angbw))
+
+        npt = npt+1
         X[:,npt:npt+1] = Xi
         w = np.asscalar(Xi[-1,0])
-
         # Adapt step size
-        if iter<5 and ds<dsmax/scf:
-            ds = ds*scf
-        elif iter>10 and ds>dsmin*scf:
-            ds = ds/scf
-        
-        # Tangent
-        zp = z
-        z = -la.solve(dRdX,dRdW)
-        alpha = np.sign(alpha*(1.0+np.dot(zp.T,z)))/np.sqrt(1.0+np.dot(z.T,z))
+        if Nop is None:
+            scf = 1.0
+        else:
+            scf = Nop/iter;
+        if angop is not None:
+            angvar = min(np.rad2deg(angbw),np.abs(180.0-np.rad2deg(angbw)))
+            scf = scf*angop/angvar
+        if scf>2.0:
+            scf = 2.0
+        elif scf<0.5:
+            scf = 0.5
+        ds = ds*scf
+        if ds>dsmax:
+            ds = dsmax
+        elif ds<dsmin:
+            ds = dsmin
+        print('N=',npt,'; W=', Xi[-1,0],'; ds=',ds,'; It=',iter,'; R=',res,'; Ang=',np.asscalar(np.rad2deg(angbw)))
+        if npt==maxNp:
+            print('Max points exceeded')
+            break                 
     X = X[:,0:npt]
     return X
 

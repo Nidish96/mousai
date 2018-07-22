@@ -35,27 +35,28 @@ params['Fs'] = np.reshape(0.00,(1,1))
 Nh = 20;
 Nt = 128;
 
-Ws = 0.01
+Ws = 0.05
 We = 4.00
-ds = 0.001
+ds = 0.01
+dsmax = 0.10
+dsmin = 0.00001
+E = np.zeros((2*Nh+1,2*Nh+1))
+E[0,0] = k
+for n in range(1,Nh+1):
+    E[2*n-1,2*n-1] = E[2*n,2*n] = k-(n*Ws)**2*m
+    E[2*n-1,2*n] = (n*Ws)*c
+    E[2*n,2*n-1] = -(n*Ws)*c
+Fl = np.zeros((2*Nh+1,1))
+Fl[2*fh-1] = 1.0
+X0 = la.solve(E,Fl)
 for F in Forcinglevels:
     params['Fc'] = np.reshape(F,(1,1))
 
-    E = np.zeros((2*Nh+1,2*Nh+1))
-    E[0,0] = k
-    for n in range(1,Nh+1):
-        E[2*n-1,2*n-1] = E[2*n,2*n] = k-(n*Ws)**2*m
-        E[2*n-1,2*n] = (n*Ws)*c
-        E[2*n,2*n-1] = -(n*Ws)*c
-    Fl = np.zeros((2*Nh+1,1))
-    Fl[2*fh-1]=F
-    X0 = la.solve(E,Fl)
-
-    Xi = ms.hb_freq_cont(fnlduffing, X0=X0, Ws=Ws, We=We, ds=ds, deriv=True, fnform='Time', num_harmonics=Nh, eqform='second_order', params=params, num_time_points=Nt, solep=1e-10, ITMAX=100, dsmax=0.50, scf=np.sqrt(2))
+    Xi = ms.hb_freq_cont(fnlduffing, X0=X0*F, Ws=Ws, We=We, ds=ds, deriv=True, fnform='Time', num_harmonics=Nh, eqform='second_order', params=params, num_time_points=Nt, solep=1e-10, ITMAX=100, scf=np.sqrt(2), Nop=6.0, dsmax=dsmax, dsmin=dsmin, zt=None, angop=10.0)
 
     W = Xi[-1,:]
     A = np.sqrt(Xi[1,:]**2 + Xi[2,:]**2)/np.sqrt(2)
     print(F)
-    plt.plot(W,A)
+    plt.plot(W,A,'o-')
 plt.xlim(0.0, 4.5)
 plt.show()
