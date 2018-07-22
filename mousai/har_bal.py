@@ -4,8 +4,10 @@ import numpy as np
 import scipy as sp
 import scipy.fftpack as fftp
 import scipy.linalg as la
+import logging
+import ipdb
 from scipy.optimize import newton_krylov, anderson, broyden1, broyden2, \
-    excitingmixing, linearmixing, diagbroyden
+    excitingmixing, linearmixing, diagbroyden, fsolve
 
 
 def hb_time(sdfunc, x0=None, omega=1, method='newton_krylov', num_harmonics=1,
@@ -594,6 +596,7 @@ def hb_freq(sdfunc, x0=None, omega=1, method='newton_krylov', num_harmonics=1,
         # print('1 eval')
         return e
 
+
     try:
         X = globals()[method](hb_err, X0, **kwargs)
         # print('tried')
@@ -804,3 +807,325 @@ def fft_to_rfft(X_real):
     """Switch from complex form fft form to SciPy rfft form."""
     X_complex = fftp.rfft(np.real(fftp.ifft(X_real)))
     return X_complex
+
+
+def hb_freq_cont(Fnlfunc, X0=None, Ws=0.01, We=1.00, ds=0.01, maxNp=1000, deriv=False, fnform='Time',
+                 method='newton_krylov', num_harmonics=1, mask_constant=True,
+                 eqform='second_order', params={}, num_time_points=128, solep=1e-6,
+                 ITMAX=100, dsmax=None, dsmin=None, scf=None, **kwargs):
+    r"""Harmonic balance solver with continuation for first and second order ODEs.
+    
+    Obtains and continues the solution of a first-order and second-order differential 
+    equation under the presumption that the solution is harmonic using an algebraic time method.
+
+    Returns 'X' (Solution with harmonics and continuation parameter), 
+    'dX' (Unit tangents along solution curve), 'R' (residuals)
+
+    Parameters
+    ----------
+    Fnlfunc : function
+         Should return the nonlinear force in Time domain if `fnform` is 'Time' 
+         and in Frequency domain in `fnform` is 'Freq'
+
+         If `deriv` is True, the function should also return the Jacobian in the 
+         following format:
+         For `fnform='Time'`, function must return 
+         :math: `F_{nl}(t), \frac{dF_{nl}}{dX}(t), \frac{dF_{nl}}{d\dot{X}}(t), \frac{dF_{nl}}{d\omega}(t)`
+         eg: `Fnl, dFnldX, dFnldXd, dFnldw = Fnlfunc(xt,params)`
+         When `xt` is n x m, `Fnl` is n x m, `dFnldX` is n x m, `dFnldXd` is n x m, `dFnldw` is n x m
+         For `fnform='Frequency'`, function must return
+         :math: '\tilde{F_{nl}}, \frac{d\tilde{F}_{nl}}{d\tilde{X}}, \frac{d\tilde{F}_{nl}}{d\omega}`
+         eg: `Fnl, dFnldX, dFnldw = Fnlfunc(x,params)`
+         Here, `x` is always n(2Nh+1) x 1, (Nh is number of harmonics) and, 
+         `Fnl` is n(2Nh+1) x 1, `dFnldX` is n(2Nh+1) x n(2Nh+1), `dFnldw` is n(2Nh+1) x 1
+    X0 : array_like, somewhat optional
+         n(2Nh+1) x 1 giving the initial guess. All zeros assumed if not provided.
+    Ws : float
+         Starting frequency for continuation
+    We : float
+         Ending frequency for continuation
+    method : str, optional
+        Name of optimization method to be used.    
+    num_harmonics : int, optional
+        Number of harmonics to presume. The `omega` = 0 constant term is always
+        presumed to exist. Minimum (and default) is 1.
+    eqform : str, optional
+        `second_order` or `first_order`. (`second order` is default)
+    params : dict
+        Dictionary of parameters required by Fnlfunc
+    num_time_points : int, default = 128
+        number of time steps for AFT
+    other : any
+        Other keyword arguments available to nonlinear solvers in
+        `scipy.optimize.nonlin
+        <https://docs.scipy.org/doc/scipy/reference/optimize.nonlin.html>`_.
+        See Notes.
+
+    Returns
+    -------
+    X, dX, R : array_like
+         Solution, Unit tangent along arc, Residual
+    X : float matrix
+        (n(2Nh+1)+1) x Npoints. Format of each column:
+        a_0^1  ---
+        a_0^2  Zero harmonics
+        ...    of all DOF's
+        a_0^n  ---
+        a_1^1  ---
+        a_1^2  First cosine harmonics 
+        ...    of all DOF's
+        a_1^n ---
+        b_1^1  ---
+        b_1^2  First Sine harmonics
+        ...    of all DOF's
+        b_1^n ---
+        .
+        .
+        .
+        a_Nh^1  ---
+        a_Nh^2  Last cosine harmonics 
+        ...     of all DOF's
+        a_Nh^n ---
+        b_Nh^1  ---
+        b_Nh^2  Last Sine harmonics
+        ...     of all DOF's
+        b_Nh^n ---  
+        W      Fundamental frequency
+    dX : float matrix
+         (n(2Nh+1)+1) x Npoints. Format same as above. Stores the normalizedd tangent 
+         vectors at each solution point.
+    R  : float matrix
+         (n(2Nh+1)+1) x Npoints. Format same as above. Stores the residual at each point.
+    
+    Examples
+    --------
+    <TO BE MADE>
+    """
+    # Check for matrices
+    if eqform=='first_order':
+        if not set(['C','K']).issubset(list(params.keys())):
+            print('Error: Please provide C & K matrices in the params dictionary')
+            return
+        else:
+            params['M'] = np.zeros_like(params['K'])
+    elif eqform=='second_order':
+        if not set(['M','C','K']).issubset(list(params.keys())):
+            print('Error: Please provide M,C & K matrices in the params dictionary')
+            return
+    else:
+        print('Error: Unknown string in eqform')
+        return
+    nd = np.shape(params['K'])[0]    
+    if  not set(['fh','Fc','Fs']).issubset(list(params.keys())):
+        print('Error: Please specify forcing details')
+        return
+    elif np.shape(params['Fc'])[0]!=nd or np.shape(params['Fs'])[0]!=nd:
+        print('Error: Dimension mismatch in Fc &/or Fs')
+        return
+    
+    if num_harmonics is None:
+        print('Error: Invalid number of harmonics')
+        return
+    Nh = num_harmonics
+    Nt = num_time_points
+    # Initial conditions exist?
+    if X0 is None:
+        X0 = np.zeros((nd*(2*Nh+1),1))
+    elif X0.size!=nd*(2*Nh+1):
+        print('Error: Invalid initial guess')
+        return -1
+    else:
+        X0 = np.reshape(X0,(X0.size,1))
+
+    def hb_res(X, params, nd, Nh, Fnlfn, fnform, deriv):
+        E = np.zeros((nd*(2*Nh+1),nd*(2*Nh+1)))
+        dEdw = E.copy()
+        M = params['M']
+        C = params['C']
+        K = params['K']
+        E[0:nd,0:nd] = K
+        w = np.asscalar(X[-1])
+        for k in range(1,Nh+1):
+            cst = nd + (k-1)*2*nd
+            cen = nd + (k-1)*2*nd + nd
+            sst = nd + (k-1)*2*nd + nd
+            sen = nd + (k-1)*2*nd + 2*nd
+            E[cst:cen,cst:cen] = E[sst:sen,sst:sen] = K - (k*w)**2*M
+            E[cst:cen,sst:sen] = (k*w)*C
+            E[sst:sen,cst:cen] = -E[cst:cen,sst:sen]
+
+            dEdw[cst:cen,cst:cen] = dEdw[sst:sen,sst:sen] = -2.*w*k**2*M
+            dEdw[cst:cen,sst:sen] = k*C
+            dEdw[sst:sen,cst:cen] = -dEdw[cst:cen,sst:sen]
+
+        # Nonlinear forcing & Jacobian calculation
+        if fnform=='Time':
+            t = np.linspace(0,2*np.pi,Nt,endpoint=0)
+            t = np.reshape(t,(Nt,1))
+            Xd = np.reshape(X[0:-1,0],(2*Nh+1,nd))
+            Xt = freq2time(Xd, Nt)
+            if deriv==True:
+                Fnlt, dFnldxt, dFnldxdt, dFnldWt = Fnlfunc(Xt, params)
+            else:
+                raise ValueError('Finite Difference Jacobian yet to be added')
+            Fnl = np.reshape(time2freq(Fnlt, Nh),(nd*(2*Nh+1),1))
+            dFnldW = np.reshape(time2freq(dFnldWt, Nh),(nd*(2*Nh+1),1))
+            
+            Jnl = np.zeros((nd*(2*Nh+1),nd*(2*Nh+1)))
+            tmp = time2freq(dFnldxt, Nh)
+            for ii in range(0,nd):
+                Jnl[ii::nd,0:nd] = tmp[:,ii*nd:(ii+1)*nd]
+            for k in range(1,Nh+1):
+                cst = nd + (k-1)*2*nd
+                cen = nd + (k-1)*2*nd + nd
+                sst = nd + (k-1)*2*nd + nd
+                sen = nd + (k-1)*2*nd + 2*nd                
+                dFnldA = time2freq(dFnldxt*np.cos(k*t)-k*dFnldxdt*np.sin(k*t), Nh)
+                dFnldB = time2freq(dFnldxt*np.sin(k*t)+k*dFnldxdt*np.cos(k*t), Nh)
+                for ii in range(0,nd):
+                    Jnl[ii::nd,cst:cen] = dFnldA[:,ii*nd:(ii+1)*nd]
+                    Jnl[ii::nd,sst:sen] = dFnldB[:,ii*nd:(ii+1)*nd]
+        elif fnform=='Freq':
+            if deriv==True:
+                Fnl, Jnl, dFnldW = Fnlfn(X, params)
+            else:
+                raise ValueError('Finite Difference Jacobian yet to be added')
+        else:
+            raise ValueError('Unknown fnform')
+        # ipdb.set_trace()
+        Fl = np.zeros((nd*(2*Nh+1),1))
+        fh = params['fh']
+        Fl[(nd+(fh-1)*2*nd):(2*nd+(fh-1)*2*nd),0] = params['Fc']
+        Fl[(2*nd+(fh-1)*2*nd):(3*nd+(fh-1)*2*nd),0] = params['Fs']
+        R = np.dot(E,X[:-1,:]) + Fnl - Fl
+        dRdX = E+Jnl
+        dRdW = np.dot(dEdw,X[:-1,:]) + dFnldW
+        return R,dRdX,dRdW
+    
+    # Correct Initial Solution
+    print('Initial Correction')
+    try:
+        Xi = np.block([[X0],[Ws]])
+        R,dRdX,dRdW = hb_res(Xi, params, nd, Nh, Fnlfunc, fnform, deriv)
+        res = np.asscalar(la.norm(R))
+        print('Initial Residual Norm is: ',res)
+        iter = 1;
+        while res>solep:
+            X0 = X0 - la.solve(dRdX,R)
+            Xi = np.block([[X0],[Ws]])
+            R,dRdX,dRdW = hb_res(Xi, params, nd, Nh, Fnlfunc, fnform, deriv)
+            res = np.asscalar(la.norm(R))
+            iter=iter+1
+            if iter>ITMAX:
+                print('Initial convergence failed even after ',ITMAX,' Iterations')
+                return -2
+    except ValueError as err:
+        print("ValueError: {0}".format(err))
+        return -3
+    print('Iter=',iter,'; Res=',res)
+    # Initiate continuation
+    X = np.zeros((nd*(2*Nh+1)+1,maxNp))
+    X[:,0:1] = Xi
+    dir = np.sign(We-Ws)
+    # Tangent
+    z = -la.solve(dRdX,dRdW)
+    alpha = dir/np.sqrt(1.0 + np.dot(z.T,z))
+    w = Ws
+    npt = 0
+    ds0 = ds
+    if scf is None:
+        scf = np.sqrt(2)
+    if dsmax is None:
+        dsmax = 5*ds
+    if dsmin is None:
+        dsmin = ds/5
+    while dir*w<dir*We:
+        npt = npt+1
+        if npt==maxNp:
+            print('Max points exceeded')
+            break        
+        # Predictor
+        dWds = alpha
+        dXds = alpha*z
+        DXds = np.block([[dXds],[dWds]])
+        X0 = Xi
+        Xp = X0 + DXds*ds
+        # ipdb.set_trace()
+        # Corrector
+        Xi = X0
+        R,dRdX,dRdW = hb_res(Xi, params, nd, Nh, Fnlfunc, fnform, deriv)
+        RR = np.block([[R],[np.dot(DXds.T,Xi-X0)-ds]])
+        JAC = np.block([[dRdX,dRdW],[DXds.T]])
+        res = np.asscalar(la.norm(RR))
+        iter=1
+        while res>solep:
+            Xi = Xi - la.solve(JAC,RR)
+            R,dRdX,dRdW = hb_res(Xi, params, nd, Nh, Fnlfunc, fnform, deriv)
+            RR = np.block([[R],[np.dot(DXds.T,Xi-X0)-ds]])
+            JAC = np.block([[dRdX,dRdW],[DXds.T]])
+            res = la.norm(RR)
+            iter=iter+1
+            if iter>ITMAX:
+                if ds>dsmin*scf:
+                    ds=ds/scf
+                    print('No convergence: Reducing step length')
+                else:
+                    print('No convergence: quitting with zeros')
+                    w = Xi[-1,:]
+                    Xi = np.zeros_like(Xi)
+                    Xi[-1,:] = w
+                    break
+                iter=1
+        print('N=',npt,'; W=', Xi[-1,0],'; ds=',ds,'; It=',iter,'; R=',res)
+        X[:,npt:npt+1] = Xi
+        w = np.asscalar(Xi[-1,0])
+
+        # Adapt step size
+        if iter<5 and ds<dsmax/scf:
+            ds = ds*scf
+        elif iter>10 and ds>dsmin*scf:
+            ds = ds/scf
+        
+        # Tangent
+        zp = z
+        z = -la.solve(dRdX,dRdW)
+        alpha = np.sign(alpha*(1.0+np.dot(zp.T,z)))/np.sqrt(1.0+np.dot(z.T,z))
+    X = X[:,0:npt]
+    return X
+
+
+def time2freq(X, Nh):
+    Nt,n = np.shape(X)
+    if Nt%2==0:
+        Nht = int(Nt/2-1)
+    else:
+        Nht = int((Nt-1)/2)
+    Xf = fftp.rfft(X,axis=0)*2/Nt
+    Xf[0,:] = Xf[0,:]/2
+    Xf = Xf[0:(2*Nh+1),:]
+    Xf[2::2,:] = -Xf[2::2,:]
+    Xfo = np.zeros((2*Nh+1,n))
+    if Nh>Nht:
+        Xfo[0:(2*Nht+1),:] = Xf[0:(2*Nht+1),:]
+    else:
+        Xfo = Xf[0:(2*Nh+1),:]
+    return Xfo
+    
+
+def freq2time(X, Nt):
+    Nh = int((np.shape(X)[0]-1)/2)
+    if Nt%2==0:
+        Nht = int(Nt/2-1)
+    else:
+        Nht = int((Nt-1)/2)    
+    n = np.shape(X)[1]
+    Xf = np.zeros((Nt,n))
+    if Nh>Nht:
+        Xf[0:(2*Nht+1),:] = X[0:(2*Nht+1),:]
+    else:
+        Xf[0:(2*Nh+1),:] = X[0:(2*Nh+1),:]
+    Xf[0,:] = Xf[0,:]*Nt
+    Xf[1::2,:] = Xf[1::2,:]*Nt/2
+    Xf[2::2,:] = -Xf[2::2,:]*Nt/2
+    Xt = fftp.irfft(Xf,axis=0)
+    return Xt

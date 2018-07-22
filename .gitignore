@@ -103,3 +103,4 @@ ENV/
 
 Untitled*.ipynb
 *.sublime-workspace
+test/*
