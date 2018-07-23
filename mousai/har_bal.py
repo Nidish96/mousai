@@ -8,6 +8,7 @@ import logging
 import ipdb
 from scipy.optimize import newton_krylov, anderson, broyden1, broyden2, \
     excitingmixing, linearmixing, diagbroyden, fsolve
+import scipy.optimize as op
 
 
 def hb_time(sdfunc, x0=None, omega=1, method='newton_krylov', num_harmonics=1,
@@ -937,112 +938,18 @@ def hb_freq_cont(Fnlfunc, X0=None, Ws=0.01, We=1.00, ds=0.01, maxNp=1000, deriv=
         return -1
     else:
         X0 = np.reshape(X0,(X0.size,1))
-
-    def hb_res(X, params, nd, Nh, Fnlfn, fnform, deriv):
-        E = np.zeros((nd*(2*Nh+1),nd*(2*Nh+1)))
-        dEdw = E.copy()
-        M = params['M']
-        C = params['C']
-        K = params['K']
-        E[0:nd,0:nd] = K
-        w = np.asscalar(X[-1])
-        for k in range(1,Nh+1):
-            cst = nd + (k-1)*2*nd
-            cen = nd + (k-1)*2*nd + nd
-            sst = nd + (k-1)*2*nd + nd
-            sen = nd + (k-1)*2*nd + 2*nd
-            E[cst:cen,cst:cen] = E[sst:sen,sst:sen] = K - (k*w)**2*M
-            E[cst:cen,sst:sen] = (k*w)*C
-            E[sst:sen,cst:cen] = -E[cst:cen,sst:sen]
-
-            dEdw[cst:cen,cst:cen] = dEdw[sst:sen,sst:sen] = -2.*w*k**2*M
-            dEdw[cst:cen,sst:sen] = k*C
-            dEdw[sst:sen,cst:cen] = -dEdw[cst:cen,sst:sen]
-
-        # Nonlinear forcing & Jacobian calculation
-        if fnform=='Time': ## INCOMPLETE: Got to add provision for velocity dependent nonlinearities
-            t = np.linspace(0,2*np.pi,Nt,endpoint=0)
-            t = np.reshape(t,(Nt,1))
-            Xd = np.reshape(X[0:-1,0],(2*Nh+1,nd))
-            Xt = freq2time(Xd, Nt)
-            if deriv==True:
-                Fnlt, dFnldxt, dFnldxdt, dFnldWt = Fnlfunc(Xt, params)
-            else:
-                Fnlt = Fnlfunc(Xt, params)
-                _h_ = 1e-3
-                dFnldx = np.zeros((Nt,nd*nd))
-                for i in range(0,nd):
-                    Xp = Xt.copy()
-                    Xp[:,i] = Xt[:,i] + _h_
-                    dFnldx[:,i::nd] = (Fnlfunc(Xp, params)-Fnlt)/_h_
-                dFnldxdt = np.zeros_like(dFnldx)
-                dFnldWt = np.zeros_like(Fnlt)
-                    
-            Fnl = np.reshape(time2freq(Fnlt, Nh),(nd*(2*Nh+1),1))
-            dFnldW = np.reshape(time2freq(dFnldWt, Nh),(nd*(2*Nh+1),1))
-            
-            Jnl = np.zeros((nd*(2*Nh+1),nd*(2*Nh+1)))
-            tmp = time2freq(dFnldxt, Nh)
-            for ii in range(0,nd):
-                Jnl[ii::nd,0:nd] = tmp[:,ii*nd:(ii+1)*nd]
-            for k in range(1,Nh+1):
-                cst = nd + (k-1)*2*nd
-                cen = nd + (k-1)*2*nd + nd
-                sst = nd + (k-1)*2*nd + nd
-                sen = nd + (k-1)*2*nd + 2*nd                
-                dFnldA = time2freq(dFnldxt*np.cos(k*t)-k*dFnldxdt*np.sin(k*t), Nh)
-                dFnldB = time2freq(dFnldxt*np.sin(k*t)+k*dFnldxdt*np.cos(k*t), Nh)
-                for ii in range(0,nd):
-                    Jnl[ii::nd,cst:cen] = dFnldA[:,ii*nd:(ii+1)*nd]
-                    Jnl[ii::nd,sst:sen] = dFnldB[:,ii*nd:(ii+1)*nd]
-        elif fnform=='Freq':
-            if deriv==True:
-                Fnl, Jnl, dFnldW = Fnlfn(X, params)
-            else:
-                Fnl = Fnlfn(X, params)
-                Jnl = np.zeros((Fnl.size,Fnl.size))
-                Xp = X.copy()
-                _h_ = 1e-3
-                for k in range(0,Fnl.size):
-                    Xp[k,:] = Xp[k,:]+_h_
-                    Jnl[:,k] = (Fnlfn(Xp, params)-Fnl)/_h_
-                    Xp[k,:] = Xp[k,:]-_h_
-                Xp[-1,:] = Xp[-1,:]+_h_
-                dFnldW = (Fnlfn(Xp,params)-Fnl)/_h_
-        else:
-            raise ValueError('Unknown fnform')
         
-        Fl = np.zeros((nd*(2*Nh+1),1))
-        fh = params['fh']
-        Fl[(nd+(fh-1)*2*nd):(2*nd+(fh-1)*2*nd),:] = params['Fc']
-        Fl[(2*nd+(fh-1)*2*nd):(3*nd+(fh-1)*2*nd),:] = params['Fs']
-        R = np.dot(E,X[:-1,:]) + Fnl - Fl
-        dRdX = E+Jnl
-        dRdW = np.dot(dEdw,X[:-1,:]) + dFnldW
-        return R,dRdX,dRdW
-    # ipdb.set_trace()
     # Correct Initial Solution
     print('Initial Correction')
-    try:
-        Xi = np.block([[X0],[Ws]])
-        R,dRdX,dRdW = hb_res(Xi, params, nd, Nh, Fnlfunc, fnform, deriv)
-        res = np.asscalar(la.norm(R))
-        print('Initial Residual Norm is: ',res)
-        iter = 1;
-        while res>solep:
-            X0 = X0 - la.solve(dRdX,R)
-            Xi = np.block([[X0],[Ws]])
-            R,dRdX,dRdW = hb_res(Xi, params, nd, Nh, Fnlfunc, fnform, deriv)
-            res = np.asscalar(la.norm(R))
-            iter=iter+1
-            print('Iter=',iter,'; Res=',res)
-            if iter>ITMAX:
-                print('Initial convergence failed even after ',ITMAX,' Iterations')
-                return -2
-    except ValueError as err:
-        print("ValueError: {0}".format(err))
-        return -3
-    print('Iter=',iter,'; Res=',res)
+    X0c = op.root(lambda X,Ws,params,nd,Nh,Nt,Fnlfunc,fnform,deriv: hb_res(np.block([[np.reshape(X,(X.size,1))],[Ws]]), params, nd, Nh, Nt, Fnlfunc, fnform, deriv), X0, args=(Ws,params,nd,Nh,Nt,Fnlfunc,fnform,deriv), method='hybr', jac=True, tol=1e-16);
+    if not X0c.success and X0c.status<1:
+        print('Initial Correction failed with message: ',X0c.message,': Quitting.')
+        return X0c
+    print('Initial Correction succeeded after ',X0c.nfev,' iterations with a final norm of',la.norm(X0c.fun))
+    X0 = np.reshape(X0c.x,(X0.size,1))
+    Xi = np.block([[X0],[Ws]])
+    R,dRdX,dRdW = hb_res(Xi, params, nd, Nh, Nt, Fnlfunc, fnform, deriv)
+    
     # Initiate continuation
     X = np.zeros((nd*(2*Nh+1)+1,maxNp))
     X[:,0:1] = Xi
@@ -1061,52 +968,42 @@ def hb_freq_cont(Fnlfunc, X0=None, Ws=0.01, We=1.00, ds=0.01, maxNp=1000, deriv=
     if dsmin is None:
         dsmin = ds/5
     Dscale = np.ones_like(Xi[:,0])
-    while dir*w<dir*We:   
+
+    
+    def resfn(X, params, nd, Nh, Nt, Fnlfunc, fnform, deriv, DXds, X0, ds):
+        X = np.reshape(X,(X.size,1))
+        R,dRdX,dRdW = hb_res(X, params, nd, Nh, Nt, Fnlfunc, fnform, deriv)
+        RR = np.block([R,np.asscalar(np.dot(DXds.T,X-X0)-ds)])
+        JAC = np.block([[dRdX,dRdW],[DXds.T]])
+        return np.reshape(RR,(RR.size,)),JAC
+    while dir*w<dir*We:
         # Predictor
         dWds = alpha
         dXds = alpha*z
         DXds = np.block([[dXds],[dWds]])
         X0 = Xi
         Xp = X0 + DXds*ds
-
+        
         zp = z
         alphap = alpha
         # Corrector
         Xi = X0
-        Dscale[:] = np.max(np.block([[np.abs(Xi),np.reshape(Dscale,(Dscale.size,1))]]),axis=1)
-        R,dRdX,dRdW = hb_res(Xi, params, nd, Nh, Fnlfunc, fnform, deriv)
-        RR = np.block([[R],[np.dot(DXds.T,Xi-X0)-ds]])
-        JAC = np.block([[dRdX,dRdW],[DXds.T]])
-        res = np.asscalar(la.norm(RR))
-        iter=1
-        while True:
-            # ipdb.set_trace()
-            Xi = Xi - np.dot(np.diag(Dscale),la.solve(np.dot(JAC,np.diag(Dscale)),RR))
-            R,dRdX,dRdW = hb_res(Xi, params, nd, Nh, Fnlfunc, fnform, deriv)
-            RR = np.block([[R],[np.dot(DXds.T,Xi-X0)-ds]])
-            JAC = np.block([[dRdX,dRdW],[DXds.T]])
-            res = la.norm(RR)
-            iter=iter+1
-            if iter>ITMAX:
-                scf = Nop/iter
-                if ds>dsmin:
-                    ds=ds*scf
-                    Xi = X0
-                    print('No convergence: Reducing step length to ',ds)
-                else:
-                    print('No convergence: quitting with zeros')
-                    w = Xi[-1,:]
-                    Xi = np.zeros_like(Xi)
-                    Xi[-1,:] = w
-                    break
-                iter=1
+        X0c = op.root(resfn, Xi, args=(params,nd,Nh,Nt,Fnlfunc,fnform,deriv,DXds,X0,ds), method='hybr', jac=True, tol=1e-10);
+        if not X0c.success and X0c.status<1:
+            print('Correction failed with message: ',X0c.message,': Quitting.')
+            X = X[:,0:npt]
+            return X
+        print('Correction succeeded after ',X0c.nfev,' iterations with a final norm of',la.norm(X0c.fun))
+        itern = X0c.nfev
+        Xi = np.reshape(X0c.x,(X0c.x.size,1))
 
-            if res<solep:
-                z = -np.sqrt(zt)*la.solve(dRdX,dRdW)
-                alpha = 1.0/np.sqrt(1.0+np.dot(z.T,z))
-                angbw = np.arccos(alpha*alphap*(1.0+np.dot(zp.T,z)))
-                break
+        R,dRdX,dRdW = hb_res(Xi, params, nd, Nh, Nt, Fnlfunc, fnform, deriv)
+        R = np.reshape(R,(R.size,1))
+        res = la.norm(R)
         # Tangent
+        z = -np.sqrt(zt)*la.solve(dRdX,dRdW)
+        alpha = 1.0/np.sqrt(1.0+np.dot(z.T,z))
+        angbw = np.arccos(alpha*alphap*(1.0+np.dot(zp.T,z)))
         alpha = alpha*np.sign(np.cos(angbw))
 
         npt = npt+1
@@ -1116,7 +1013,7 @@ def hb_freq_cont(Fnlfunc, X0=None, Ws=0.01, We=1.00, ds=0.01, maxNp=1000, deriv=
         if Nop is None:
             scf = 1.0
         else:
-            scf = Nop/iter;
+            scf = Nop/itern;
         if angop is not None:
             angvar = min(np.rad2deg(angbw),np.abs(180.0-np.rad2deg(angbw)))
             scf = scf*angop/angvar
@@ -1124,18 +1021,13 @@ def hb_freq_cont(Fnlfunc, X0=None, Ws=0.01, We=1.00, ds=0.01, maxNp=1000, deriv=
             scf = 2.0
         elif scf<0.5:
             scf = 0.5
-        ds = ds*scf
-        if ds>dsmax:
-            ds = dsmax
-        elif ds<dsmin:
-            ds = dsmin
-        print('N=',npt,'; W=', Xi[-1,0],'; ds=',ds,'; It=',iter,'; R=',res,'; Ang=',np.asscalar(np.rad2deg(angbw)))
+        ds = max(min(dsmax,ds*scf),dsmin)
+        print('N=',npt,'; W=', Xi[-1,0],'; ds=',ds,'; It=',itern,'; R=',res,'; Ang=',np.asscalar(np.rad2deg(angbw)))
         if npt==maxNp:
             print('Max points exceeded')
             break                 
     X = X[:,0:npt]
     return X
-
 
 def time2freq(X, Nh):
     Nt,n = np.shape(X)
@@ -1172,3 +1064,89 @@ def freq2time(X, Nt):
     Xf[2::2,:] = -Xf[2::2,:]*Nt/2
     Xt = fftp.irfft(Xf,axis=0)
     return Xt
+
+
+def hb_res(X, params, nd, Nh, Nt, Fnlfn, fnform, deriv):
+    E = np.zeros((nd*(2*Nh+1),nd*(2*Nh+1)))
+    dEdw = E.copy()
+    M = params['M']
+    C = params['C']
+    K = params['K']
+    E[0:nd,0:nd] = K
+    w = np.asscalar(X[-1])
+    for k in range(1,Nh+1):
+        cst = nd + (k-1)*2*nd
+        cen = nd + (k-1)*2*nd + nd
+        sst = nd + (k-1)*2*nd + nd
+        sen = nd + (k-1)*2*nd + 2*nd
+        E[cst:cen,cst:cen] = E[sst:sen,sst:sen] = K - (k*w)**2*M
+        E[cst:cen,sst:sen] = (k*w)*C
+        E[sst:sen,cst:cen] = -E[cst:cen,sst:sen]
+
+        dEdw[cst:cen,cst:cen] = dEdw[sst:sen,sst:sen] = -2.*w*k**2*M
+        dEdw[cst:cen,sst:sen] = k*C
+        dEdw[sst:sen,cst:cen] = -dEdw[cst:cen,sst:sen]
+
+    # Nonlinear forcing & Jacobian calculation
+    if fnform=='Time': ## INCOMPLETE: Got to add provision for velocity dependent nonlinearities
+        t = np.linspace(0,2*np.pi,Nt,endpoint=0)
+        t = np.reshape(t,(Nt,1))
+        Xd = np.reshape(X[0:-1,0],(2*Nh+1,nd))
+        Xt = freq2time(Xd, Nt)
+        if deriv==True:
+            Fnlt, dFnldxt, dFnldxdt, dFnldWt = Fnlfn(Xt, params)
+        else:
+            Fnlt = Fnlfn(Xt, params)
+            _h_ = 1e-3
+            dFnldx = np.zeros((Nt,nd*nd))
+            for i in range(0,nd):
+                Xp = Xt.copy()
+                Xp[:,i] = Xt[:,i] + _h_
+                dFnldx[:,i::nd] = (Fnlfn(Xp, params)-Fnlt)/_h_
+                dFnldxdt = np.zeros_like(dFnldx)
+                dFnldWt = np.zeros_like(Fnlt)
+
+        Fnl = np.reshape(time2freq(Fnlt, Nh),(nd*(2*Nh+1),1))
+        dFnldW = np.reshape(time2freq(dFnldWt, Nh),(nd*(2*Nh+1),1))
+
+        Jnl = np.zeros((nd*(2*Nh+1),nd*(2*Nh+1)))
+        tmp = time2freq(dFnldxt, Nh)
+        for ii in range(0,nd):
+            Jnl[ii::nd,0:nd] = tmp[:,ii*nd:(ii+1)*nd]
+        for k in range(1,Nh+1):
+            cst = nd + (k-1)*2*nd
+            cen = nd + (k-1)*2*nd + nd
+            sst = nd + (k-1)*2*nd + nd
+            sen = nd + (k-1)*2*nd + 2*nd                
+            dFnldA = time2freq(dFnldxt*np.cos(k*t)-k*dFnldxdt*np.sin(k*t), Nh)
+            dFnldB = time2freq(dFnldxt*np.sin(k*t)+k*dFnldxdt*np.cos(k*t), Nh)
+            for ii in range(0,nd):
+                Jnl[ii::nd,cst:cen] = dFnldA[:,ii*nd:(ii+1)*nd]
+                Jnl[ii::nd,sst:sen] = dFnldB[:,ii*nd:(ii+1)*nd]
+    elif fnform=='Freq':
+        if deriv==True:
+            Fnl, Jnl, dFnldW = Fnlfn(X, params)
+        else:
+            Fnl = Fnlfn(X, params)
+            Jnl = np.zeros((Fnl.size,Fnl.size))
+            Xp = X.copy()
+            _h_ = 1e-3
+            for k in range(0,Fnl.size):
+                Xp[k,:] = Xp[k,:]+_h_
+                Jnl[:,k] = (Fnlfn(Xp, params)-Fnl)/_h_
+                Xp[k,:] = Xp[k,:]-_h_
+                Xp[-1,:] = Xp[-1,:]+_h_
+                dFnldW = (Fnlfn(Xp,params)-Fnl)/_h_
+    else:
+        raise ValueError('Unknown fnform')
+
+    Fl = np.zeros((nd*(2*Nh+1),1))
+    fh = params['fh']
+    Fl[(nd+(fh-1)*2*nd):(2*nd+(fh-1)*2*nd),:] = params['Fc']
+    Fl[(2*nd+(fh-1)*2*nd):(3*nd+(fh-1)*2*nd),:] = params['Fs']
+    R = np.dot(E,X[:-1,:]) + Fnl - Fl
+    dRdX = E+Jnl
+    dRdW = np.dot(dEdw,X[:-1,:]) + dFnldW
+
+    R = np.reshape(R,(R.size,))
+    return R,dRdX,dRdW
